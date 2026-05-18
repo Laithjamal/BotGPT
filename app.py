@@ -2151,13 +2151,14 @@ async def _fire_custom_reply(message: Message, client: Client,
 
 
 # ══════════════════════════════════════════════════════════
-#  ميزة يوت — النسخة المحسّنة للسرعة القصوى
+#  ميزة يوت — النسخة المحسّنة للسرعة القصوى (v2 — fps.ms)
 #  المبدأ:
-#    1. yt-dlp بـ extract_flat + android client يجيب video_id+title بدون تحميل (~1 ث)
-#    2. yt-dlp يحمّل من رابط مباشر بدون إعادة البحث
-#    3. جودة 48kbps MP3 = حجم 2-4MB = تحميل 1-3 ثواني
-#    4. concurrent_fragments: 10 = تحميل متوازي
-#    5. max_filesize: 25MB = حماية السيرفر
+#    1. ytsearch1 + android_music client = بحث في ~1 ثانية
+#    2. format 140 (m4a 128kbps) = بدون تفاوض على الجودة
+#    3. بدون تحويل MP3 = توفير 3-10 ثواني من FFmpeg
+#    4. concurrent_fragments: 5 + http_chunk_size: 1MB = تحميل أسرع
+#    5. geo_bypass + nocheckcertificate = تجاوز قيود الشبكة
+#    6. كاش FFmpeg path عند تحميل الموديول = لا تكرار
 # ══════════════════════════════════════════════════════════
 
 import shutil as _shutil
@@ -2172,10 +2173,15 @@ for _v in ["python3.11", "python3.10", "python3.9", "python3"]:
         break
 # ──────────────────────────────────────────────────────────
 
+# ── كاش لمسار ffmpeg (يحسب مرة واحدة عند تحميل الموديول) ──
+_FFMPEG_PATH = _shutil.which("ffmpeg")
+_HAS_FFMPEG  = _FFMPEG_PATH is not None
+# ──────────────────────────────────────────────────────────
+
 
 def _get_ffmpeg_path():
-    """التحقق من وجود ffmpeg في النظام."""
-    return _shutil.which("ffmpeg")
+    """التحقق من وجود ffmpeg — استخدم القيمة المخزّنة."""
+    return _FFMPEG_PATH
 
 
 def _get_cookies_path():
@@ -2192,9 +2198,63 @@ def _get_cookies_path():
     return None
 
 
+def _build_fast_ydl_opts(out_dir: str, full_mode: bool):
+    """
+    خيارات yt-dlp المُحسّنة للسرعة القصوى على fps.ms المجاني.
+    - format 140: m4a 128kbps مباشرة من YouTube (لا حاجة لـ FFmpeg)
+    - android_music client: غالباً أسرع من android العادي
+    - بدون postprocessors: نرسل m4a كما هو (تلغرام يقبله كصوت)
+    """
+    import yt_dlp
+
+    if full_mode:
+        # نسخة كاملة: حتى 25 دقيقة، 45MB
+        format_spec  = "140/bestaudio[ext=m4a][abr<=160]/bestaudio[ext=m4a]/bestaudio"
+        max_duration = 1500
+        max_filesize = 45 * 1024 * 1024
+    else:
+        # نسخة سريعة: حتى 10 دقائق، 18MB
+        format_spec  = "140/bestaudio[ext=m4a]/bestaudio"
+        max_duration = 600
+        max_filesize = 18 * 1024 * 1024
+
+    opts = {
+        "format":                     format_spec,
+        "outtmpl":                    os.path.join(out_dir, "%(id)s.%(ext)s"),
+        "noplaylist":                 True,
+        "quiet":                      True,
+        "no_warnings":                True,
+        "noprogress":                 True,
+        "socket_timeout":             6,
+        "retries":                    2,
+        "extractor_retries":          2,
+        "fragment_retries":           3,
+        "skip_unavailable_fragments": True,
+        "concurrent_fragments":       5,
+        "http_chunk_size":            1024 * 1024,   # 1MB chunks
+        "max_filesize":               max_filesize,
+        "geo_bypass":                 True,
+        "nocheckcertificate":         True,
+        "match_filter":               yt_dlp.utils.match_filter_func(
+                                        f"duration < {max_duration}"
+                                      ),
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android_music", "android"],
+            }
+        },
+    }
+    _cookies = _get_cookies_path()
+    if _cookies:
+        opts["cookiefile"] = _cookies
+    # ⚠️ متعمّداً: لا نضيف postprocessors (FFmpeg) → سرعة قصوى
+    # m4a يُرسَل كصوت طبيعي في تلغرام بدون أي تحويل
+    return opts
+
+
 def _yt_search_id(query: str):
     """
-    يبحث بـ extract_flat + android client — يجيب video_id و title فقط بدون تحميل.
+    يبحث بـ extract_flat + android_music client — يجيب video_id و title فقط.
     أسرع بكثير من ytsearch العادي لأنه لا يحمّل صفحة الفيديو.
     يرجع (video_id, title) أو None.
     """
@@ -2204,15 +2264,18 @@ def _yt_search_id(query: str):
         return None
 
     ydl_opts = {
-        "quiet":          True,
-        "no_warnings":    True,
-        "extract_flat":   True,
-        "skip_download":  True,
-        "noplaylist":     True,
-        "socket_timeout": 8,
-        "retries":        1,
+        "quiet":              True,
+        "no_warnings":        True,
+        "extract_flat":       True,
+        "skip_download":      True,
+        "noplaylist":         True,
+        "socket_timeout":     6,
+        "retries":            1,
+        "extractor_retries":  1,
+        "geo_bypass":         True,
+        "nocheckcertificate": True,
         "extractor_args": {
-            "youtube": {"player_client": ["android"]}
+            "youtube": {"player_client": ["android_music", "android"]}
         },
     }
     _cookies = _get_cookies_path()
@@ -2220,7 +2283,7 @@ def _yt_search_id(query: str):
         ydl_opts["cookiefile"] = _cookies
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+            info = ydl.extract_info(f"ytsearch3:{query}", download=False)
         if not info:
             return None
         entries = info.get("entries") or []
@@ -2245,54 +2308,15 @@ def _yt_search_id(query: str):
 
 def _yt_download_by_id(video_id: str, title: str, out_dir: str, full_mode: bool = False):
     """
-    يحمّل من رابط مباشر بدون بحث.
-    full_mode=False → حد 8 دقائق + جودة اقتصادية (آمن للسرعة)
-    full_mode=True  → حد 20 دقيقة + جودة 128kbps
+    يحمّل من رابط مباشر بدون بحث — أسرع بـ ~1 ثانية مقارنة بالطريقة المدمجة.
     """
     try:
         import yt_dlp
     except ImportError:
         return None
 
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    has_ffmpeg = _get_ffmpeg_path() is not None
-
-    if full_mode:
-        format_spec   = "bestaudio[ext=m4a]/bestaudio/best"
-        quality       = "128"
-        max_duration  = 1200
-    else:
-        format_spec   = "bestaudio[abr<=48]/worstaudio[ext=m4a]/worstaudio/bestaudio/best"
-        quality       = "48"
-        max_duration  = 480
-
-    ydl_opts = {
-        "format":                     format_spec,
-        "outtmpl":                    os.path.join(out_dir, "%(id)s.%(ext)s"),
-        "noplaylist":                 True,
-        "quiet":                      True,
-        "no_warnings":                True,
-        "socket_timeout":             10,
-        "retries":                    2,
-        "fragment_retries":           2,
-        "skip_unavailable_fragments": True,
-        "concurrent_fragments":       1,
-        "buffersize":                 4096,
-        "max_filesize":               15 * 1024 * 1024,
-        "match_filter":               yt_dlp.utils.match_filter_func(f"duration < {max_duration}"),
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"],
-            }
-        },
-    }
-
-    if has_ffmpeg:
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": quality,
-        }]
+    url      = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts = _build_fast_ydl_opts(out_dir, full_mode)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -2309,12 +2333,12 @@ def _yt_download_by_id(video_id: str, title: str, out_dir: str, full_mode: bool 
     for fname in os.listdir(out_dir):
         fp = os.path.join(out_dir, fname)
         if os.path.isfile(fp) and os.path.getsize(fp) > 5000:
-            if fname.endswith(('.mp3', '.m4a', '.ogg', '.webm', '.mp4')):
+            if fname.endswith(('.m4a', '.mp3', '.ogg', '.webm', '.mp4', '.opus')):
                 candidates.append((fp, os.path.getsize(fp)))
-    
+
     if not candidates:
         return None
-    
+
     candidates.sort(key=lambda x: x[1], reverse=True)
     return candidates[0][0], title
 
@@ -2328,49 +2352,12 @@ def _yt_search_and_download(query: str, out_dir: str, full_mode: bool = False):
     except ImportError:
         return None
 
-    has_ffmpeg = _get_ffmpeg_path() is not None
+    ydl_opts = _build_fast_ydl_opts(out_dir, full_mode)
+    title    = query
 
-    if full_mode:
-        format_spec   = "bestaudio[ext=m4a]/bestaudio/best"
-        quality       = "128"
-        max_duration  = 1200
-    else:
-        format_spec   = "bestaudio[abr<=48]/worstaudio[ext=m4a]/worstaudio/bestaudio/best"
-        quality       = "48"
-        max_duration  = 480
-
-    ydl_opts = {
-        "format":                     format_spec,
-        "outtmpl":                    os.path.join(out_dir, "%(id)s.%(ext)s"),
-        "noplaylist":                 True,
-        "quiet":                      True,
-        "no_warnings":                True,
-        "socket_timeout":             10,
-        "retries":                    2,
-        "fragment_retries":           2,
-        "skip_unavailable_fragments": True,
-        "concurrent_fragments":       1,
-        "buffersize":                 4096,
-        "max_filesize":               15 * 1024 * 1024,
-        "match_filter":               yt_dlp.utils.match_filter_func(f"duration < {max_duration}"),
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"],
-            }
-        },
-    }
-
-    if has_ffmpeg:
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": quality,
-        }]
-
-    title = query
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch3:{query}", download=True)
+            info = ydl.extract_info(f"ytsearch1:{query}", download=True)
         if not info:
             return None
         entry = (info.get("entries") or [info])[0]
@@ -2386,12 +2373,12 @@ def _yt_search_and_download(query: str, out_dir: str, full_mode: bool = False):
     for fname in os.listdir(out_dir):
         fp = os.path.join(out_dir, fname)
         if os.path.isfile(fp) and os.path.getsize(fp) > 5000:
-            if fname.endswith(('.mp3', '.m4a', '.ogg', '.webm', '.mp4')):
+            if fname.endswith(('.m4a', '.mp3', '.ogg', '.webm', '.mp4', '.opus')):
                 candidates.append((fp, os.path.getsize(fp)))
-    
+
     if not candidates:
         return None
-    
+
     candidates.sort(key=lambda x: x[1], reverse=True)
     return candidates[0][0], title
 
@@ -2455,11 +2442,26 @@ async def handle_youtube(client: Client, message: Message):
     try:
         loop = asyncio.get_event_loop()
 
-        # ── بحث وتحميل في خطوة واحدة ──
-        await wait_msg.edit_text("⏬ يحمّل...")
-        result = await loop.run_in_executor(
-            None, _yt_search_and_download, query, tmp_dir, full_mode
+        # ── المسار السريع: search_id ثم download_by_id ──
+        # أسرع لأن extract_flat لا يحمّل صفحة الفيديو كاملة
+        search_result = await loop.run_in_executor(
+            None, _yt_search_id, query
         )
+
+        result = None
+        if search_result:
+            video_id, title = search_result
+            await wait_msg.edit_text("⏬ يحمّل...")
+            result = await loop.run_in_executor(
+                None, _yt_download_by_id, video_id, title, tmp_dir, full_mode
+            )
+
+        # ── fallback: لو المسار السريع فشل، استخدم البحث+التحميل المدمج ──
+        if not result:
+            await wait_msg.edit_text("⏬ يحمّل...")
+            result = await loop.run_in_executor(
+                None, _yt_search_and_download, query, tmp_dir, full_mode
+            )
 
         if not result:
             await wait_msg.edit_text("❌ لم يتم العثور على الطلب، ابحث بصيغة أخرى")
