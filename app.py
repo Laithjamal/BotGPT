@@ -2207,14 +2207,25 @@ def _build_fast_ydl_opts(out_dir: str, full_mode: bool):
     """
     import yt_dlp
 
+    # ── سلسلة fallback مرنة لكل أنواع الصوت ──
+    # 140 (m4a 128k) → 251 (webm/opus 160k) → 250 (webm/opus 70k) →
+    # 249 (webm/opus 50k) → bestaudio (أي ملف صوت) → worst (آخر حل)
     if full_mode:
         # نسخة كاملة: حتى 25 دقيقة، 45MB
-        format_spec  = "140/bestaudio[ext=m4a][abr<=160]/bestaudio[ext=m4a]/bestaudio"
+        format_spec  = (
+            "140/251/250/249/"
+            "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/"
+            "best[height<=480]"
+        )
         max_duration = 1500
         max_filesize = 45 * 1024 * 1024
     else:
         # نسخة سريعة: حتى 10 دقائق، 18MB
-        format_spec  = "140/bestaudio[ext=m4a]/bestaudio"
+        format_spec  = (
+            "140/251/250/249/"
+            "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/"
+            "best[height<=360]"
+        )
         max_duration = 600
         max_filesize = 18 * 1024 * 1024
 
