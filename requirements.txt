@@ -4,4 +4,4 @@ pyaes
 pymediainfo
 pysocks
 httpx>=0.24.1
-yt-dlp
+yt-dlp>=2025.10.0

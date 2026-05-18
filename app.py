@@ -2151,32 +2151,34 @@ async def _fire_custom_reply(message: Message, client: Client,
 
 
 # ══════════════════════════════════════════════════════════
-#  ميزة يوت — النسخة المحسّنة للسرعة القصوى (v2 — fps.ms)
-#  المبدأ:
-#    1. ytsearch1 + android_music client = بحث في ~1 ثانية
-#    2. format 140 (m4a 128kbps) = بدون تفاوض على الجودة
-#    3. بدون تحويل MP3 = توفير 3-10 ثواني من FFmpeg
-#    4. concurrent_fragments: 5 + http_chunk_size: 1MB = تحميل أسرع
-#    5. geo_bypass + nocheckcertificate = تجاوز قيود الشبكة
-#    6. كاش FFmpeg path عند تحميل الموديول = لا تكرار
+#  ميزة يوت — v3 (2026) — مقاومة لحماية يوتيوب الجديدة
+#  التحسينات:
+#    1. تجريب عدة player_clients بترتيب الأنجح في 2026:
+#         tv_simply → ios → web_safari → mweb → tv → android
+#       (الأولى لا تحتاج PO Token عادةً)
+#    2. format بسيط ومرن: bestaudio/best بدون قيود صارمة
+#    3. format_sort بصيغة yt-dlp الصحيحة: aext:m4a (مو acodec:m4a)
+#    4. retry تلقائي بأكثر من client عند فشل أحدها
+#    5. رسائل خطأ واضحة بالعراقي للمستخدم
+#    6. دعم تلقائي لـ cookies.txt إن وُجد (يتجاوز bot detection)
 # ══════════════════════════════════════════════════════════
 
 import shutil as _shutil
 import sys as _sys
 import os as _os
 
-# ── ضمان إيجاد yt-dlp المحدّث من .local ──────────────────
-for _v in ["python3.11", "python3.10", "python3.9", "python3"]:
-    _p = f"/home/container/.local/lib/{_v}/site-packages"
-    if _os.path.isdir(_p) and _p not in _sys.path:
-        _sys.path.insert(0, _p)
-        break
-# ──────────────────────────────────────────────────────────
-
 # ── كاش لمسار ffmpeg (يحسب مرة واحدة عند تحميل الموديول) ──
 _FFMPEG_PATH = _shutil.which("ffmpeg")
 _HAS_FFMPEG  = _FFMPEG_PATH is not None
-# ──────────────────────────────────────────────────────────
+
+# ── قائمة player_clients بترتيب الأنجح في 2026 ──
+# tv_simply: لا يحتاج PO Token، يعطي صيغ صوت m4a/opus
+# ios:       يعمل غالباً بدون PO Token، يعطي m4a 128kbps
+# web_safari: متصفح Safari — يتجاوز كثير من الفحوصات
+# mweb:      موبايل ويب — احتياط
+# tv:        تلفزيون كامل — احتياط
+# android:   آخر ملاذ
+_YT_CLIENT_ORDER = ["tv_simply", "ios", "web_safari", "mweb", "tv", "android"]
 
 
 def _get_ffmpeg_path():
@@ -2191,6 +2193,7 @@ def _get_cookies_path():
         os.path.expanduser("~/cookies.txt"),
         "/root/cookies.txt",
         "/app/cookies.txt",
+        "/home/container/cookies.txt",
     ]
     for p in candidates:
         if os.path.isfile(p) and os.path.getsize(p) > 100:
@@ -2198,20 +2201,12 @@ def _get_cookies_path():
     return None
 
 
-def _build_fast_ydl_opts(out_dir: str, full_mode: bool):
+def _build_ydl_opts(out_dir: str, full_mode: bool, clients: list):
     """
-    خيارات yt-dlp المُحسّنة للسرعة + التوافق مع YouTube الحديث (PO Token bypass).
-    - بدلاً من android_music الذي يحتاج PO Token على السيرفرات السحابية،
-      نستخدم mweb + tv_simply + android_vr — كلها لا تحتاج PO Token.
-    - format = bestaudio/best — مرن جداً، يقبل أي صيغة متوفرة.
-    - format_sort يفضّل m4a (سريع، بدون تحويل) ثم opus ثم mp3.
+    يبني خيارات yt-dlp مع قائمة player_clients محددة.
+    - format = bestaudio/best (مرن، يقبل أي صيغة).
+    - format_sort = aext:m4a (الصحيح بـ yt-dlp بدل acodec:m4a الخطأ).
     """
-    import yt_dlp
-
-    # نقبل أي صيغة صوت متوفرة (بدون قيود صارمة)
-    # YouTube قد يرجع m4a أو webm/opus أو mp4 — كلها مقبولة
-    format_spec = "bestaudio/best"
-
     if full_mode:
         max_duration = 1500   # 25 دقيقة
         max_filesize = 45 * 1024 * 1024
@@ -2220,176 +2215,257 @@ def _build_fast_ydl_opts(out_dir: str, full_mode: bool):
         max_filesize = 18 * 1024 * 1024
 
     opts = {
-        "format":                     format_spec,
-        # نفضّل m4a ثم opus ثم mp3، ونفضّل أصغر ملف ضمن الجودة الجيدة
-        "format_sort":                ["acodec:m4a", "acodec:opus", "acodec:mp3", "abr~128"],
+        "format":                     "bestaudio/best",
+        # ✅ الصيغة الصحيحة: aext (audio extension) مو acodec
+        "format_sort":                ["aext:m4a", "aext:webm", "abr~128"],
         "outtmpl":                    os.path.join(out_dir, "%(id)s.%(ext)s"),
         "noplaylist":                 True,
         "quiet":                      True,
         "no_warnings":                True,
         "noprogress":                 True,
-        "socket_timeout":             8,
-        "retries":                    3,
-        "extractor_retries":          3,
+        "socket_timeout":             10,
+        "retries":                    2,
+        "extractor_retries":          2,
         "fragment_retries":           3,
         "skip_unavailable_fragments": True,
-        "concurrent_fragments":       5,
+        "concurrent_fragments":       4,
         "http_chunk_size":            1024 * 1024,
         "max_filesize":               max_filesize,
         "geo_bypass":                 True,
         "nocheckcertificate":         True,
-        "match_filter":               yt_dlp.utils.match_filter_func(
-                                        f"duration < {max_duration}"
-                                      ),
         "extractor_args": {
             "youtube": {
-                # ┌──── 🔑 المفتاح السحري لتجاوز قيود السيرفرات السحابية ────┐
-                # │ هذه العملاء لا يحتاجون PO Token (proof-of-origin):       │
-                # │  • mweb       = موبايل ويب (الأكثر استقراراً)            │
-                # │  • tv_simply  = تلفزيون مبسّط (يعطي صيغ صوت كاملة)      │
-                # │  • android_vr = نظارات VR (يتجاوز معظم القيود)            │
-                # │  • web        = ويب عادي (احتياط)                         │
-                # └─────────────────────────────────────────────────────────┘
-                "player_client": ["mweb", "tv_simply", "android_vr", "web"],
+                "player_client": clients,
+                # تجاوز فحوصات إضافية
+                "player_skip":   ["webpage", "configs"],
             }
         },
     }
+    # match_filter اختياري — لا نطبّقه على البحث، فقط على التحميل
+    if max_duration:
+        try:
+            import yt_dlp
+            opts["match_filter"] = yt_dlp.utils.match_filter_func(
+                f"duration < {max_duration}"
+            )
+        except Exception:
+            pass
+
     _cookies = _get_cookies_path()
     if _cookies:
         opts["cookiefile"] = _cookies
-    # m4a/webm كلاهما يُرسَل كصوت طبيعي في تلغرام بدون أي تحويل
     return opts
 
 
 def _yt_search_id(query: str):
     """
-    يبحث بـ extract_flat + android_music client — يجيب video_id و title فقط.
-    أسرع بكثير من ytsearch العادي لأنه لا يحمّل صفحة الفيديو.
-    يرجع (video_id, title) أو None.
+    يبحث عن أول فيديو مطابق ويرجع (video_id, title).
+    يجرّب عدة clients بالترتيب — أول واحد ينجح يستخدمه.
     """
     try:
         import yt_dlp
     except ImportError:
+        logging.error("[yt-search] yt-dlp غير مثبّت")
         return None
 
-    ydl_opts = {
-        "quiet":              True,
-        "no_warnings":        True,
-        "extract_flat":       True,
-        "skip_download":      True,
-        "noplaylist":         True,
-        "socket_timeout":     8,
-        "retries":            2,
-        "extractor_retries":  2,
-        "geo_bypass":         True,
-        "nocheckcertificate": True,
-        "extractor_args": {
-            "youtube": {"player_client": ["mweb", "tv_simply", "web"]}
-        },
-    }
-    _cookies = _get_cookies_path()
-    if _cookies:
-        ydl_opts["cookiefile"] = _cookies
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch3:{query}", download=False)
-        if not info:
-            return None
-        entries = info.get("entries") or []
-        if not entries:
-            return None
-        for entry in entries:
-            vid   = entry.get("id") or entry.get("videoId")
-            title = entry.get("title", query)
-            if not vid:
+    last_err = None
+    # نجرّب client واحد كل مرة للسرعة في البحث
+    for client_name in _YT_CLIENT_ORDER[:4]:
+        ydl_opts = {
+            "quiet":              True,
+            "no_warnings":        True,
+            "extract_flat":       True,
+            "skip_download":      True,
+            "noplaylist":         True,
+            "socket_timeout":     8,
+            "retries":            1,
+            "extractor_retries":  1,
+            "geo_bypass":         True,
+            "nocheckcertificate": True,
+            "extractor_args": {
+                "youtube": {"player_client": [client_name]}
+            },
+        }
+        _cookies = _get_cookies_path()
+        if _cookies:
+            ydl_opts["cookiefile"] = _cookies
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch3:{query}", download=False)
+            if not info:
                 continue
-            ie_key = entry.get("ie_key", "") or entry.get("_type", "")
-            if ie_key in ("YoutubeTab", "YoutubePlaylist"):
-                continue
-            if entry.get("channel_id") == vid:
-                continue
-            if len(vid) == 11:
+            entries = info.get("entries") or []
+            for entry in entries:
+                if not entry:
+                    continue
+                vid   = entry.get("id") or entry.get("videoId")
+                title = entry.get("title") or query
+                if not vid or len(vid) != 11:
+                    continue
+                ie_key = entry.get("ie_key", "") or entry.get("_type", "")
+                if ie_key in ("YoutubeTab", "YoutubePlaylist"):
+                    continue
+                if entry.get("channel_id") == vid:
+                    continue
+                logging.info(f"[yt-search] نجح بـ client={client_name} → {vid}")
                 return vid, title
-    except Exception as e:
-        logging.error(f"[yt-search-id] {e}")
+        except Exception as e:
+            last_err = str(e)
+            logging.warning(f"[yt-search] فشل client={client_name}: {e}")
+            continue
+
+    if last_err:
+        logging.error(f"[yt-search] فشل جميع الـ clients. آخر خطأ: {last_err}")
     return None
 
 
 def _yt_download_by_id(video_id: str, title: str, out_dir: str, full_mode: bool = False):
     """
-    يحمّل من رابط مباشر بدون بحث — أسرع بـ ~1 ثانية مقارنة بالطريقة المدمجة.
+    يحمّل فيديو معروف الـ id. يجرّب عدة player_clients بالتتابع
+    حتى ينجح أحدها — وهي الطريقة الأنجع لتجاوز bot detection.
+    يرجع (file_path, title) أو None أو ("TOO_LARGE", title).
     """
     try:
         import yt_dlp
     except ImportError:
+        logging.error("[yt-download] yt-dlp غير مثبّت")
         return None
 
-    url      = f"https://www.youtube.com/watch?v={video_id}"
-    ydl_opts = _build_fast_ydl_opts(out_dir, full_mode)
+    url = f"https://www.youtube.com/watch?v={video_id}"
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except yt_dlp.utils.DownloadError as e:
-        logging.error(f"[yt-download-id] {e}")
-        return None
-    except Exception as e:
-        logging.error(f"[yt-download-id] {e}")
-        return None
+    last_err = None
+    bot_detected = False
+    too_large = False
 
-    # البحث عن الملف الناتج (أكبر ملف صالح)
-    candidates = []
-    for fname in os.listdir(out_dir):
-        fp = os.path.join(out_dir, fname)
-        if os.path.isfile(fp) and os.path.getsize(fp) > 5000:
-            if fname.endswith(('.m4a', '.mp3', '.ogg', '.webm', '.mp4', '.opus')):
-                candidates.append((fp, os.path.getsize(fp)))
+    # نجرّب كل client على حدة — بعضها يفشل والبعض ينجح
+    for client_name in _YT_CLIENT_ORDER:
+        # نظّف المجلد قبل المحاولة الجديدة
+        for fname in list(os.listdir(out_dir)):
+            try:
+                os.remove(os.path.join(out_dir, fname))
+            except Exception:
+                pass
 
-    if not candidates:
-        return None
+        ydl_opts = _build_ydl_opts(out_dir, full_mode, [client_name])
 
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return candidates[0][0], title
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            # تحقق من الملف الناتج
+            candidates = []
+            for fname in os.listdir(out_dir):
+                fp = os.path.join(out_dir, fname)
+                if os.path.isfile(fp) and os.path.getsize(fp) > 5000:
+                    if fname.endswith(('.m4a', '.mp3', '.ogg', '.webm',
+                                       '.mp4', '.opus', '.aac')):
+                        candidates.append((fp, os.path.getsize(fp)))
+
+            if candidates:
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                logging.info(f"[yt-download] نجح بـ client={client_name}")
+                return candidates[0][0], title
+
+        except yt_dlp.utils.DownloadError as e:
+            err_str = str(e).lower()
+            last_err = str(e)
+            if "file is larger than max-filesize" in err_str or "max_filesize" in err_str:
+                too_large = True
+                logging.warning(f"[yt-download] الملف أكبر من الحد")
+                break  # ما فائدة من تجريب clients ثانية
+            if any(k in err_str for k in [
+                "sign in to confirm", "not a bot", "bot",
+                "please sign in", "po token", "po_token"
+            ]):
+                bot_detected = True
+                logging.warning(f"[yt-download] bot detection مع client={client_name}")
+            else:
+                logging.warning(f"[yt-download] فشل client={client_name}: {e}")
+            continue
+        except Exception as e:
+            last_err = str(e)
+            logging.warning(f"[yt-download] استثناء client={client_name}: {e}")
+            continue
+
+    if too_large:
+        return ("TOO_LARGE", title)
+
+    if bot_detected:
+        return ("BOT_DETECTED", title)
+
+    logging.error(f"[yt-download] فشل جميع الـ clients. آخر خطأ: {last_err}")
+    return None
 
 
 def _yt_search_and_download(query: str, out_dir: str, full_mode: bool = False):
     """
-    fallback: يبحث ويحمّل في خطوة واحدة — لو _yt_search_id فشل.
+    fallback شامل: يبحث ويحمّل في خطوة واحدة، يجرّب عدة clients.
+    يستخدم لو _yt_search_id فشل.
     """
     try:
         import yt_dlp
     except ImportError:
         return None
 
-    ydl_opts = _build_fast_ydl_opts(out_dir, full_mode)
-    title    = query
+    last_err = None
+    bot_detected = False
+    too_large = False
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=True)
-        if not info:
-            return None
-        entry = (info.get("entries") or [info])[0]
-        title = entry.get("title", query)
-    except yt_dlp.utils.DownloadError as e:
-        logging.error(f"[yt-search-dl] {e}")
-        return None
-    except Exception as e:
-        logging.error(f"[yt-search-dl] {e}")
-        return None
+    for client_name in _YT_CLIENT_ORDER:
+        # نظّف المجلد
+        for fname in list(os.listdir(out_dir)):
+            try:
+                os.remove(os.path.join(out_dir, fname))
+            except Exception:
+                pass
 
-    candidates = []
-    for fname in os.listdir(out_dir):
-        fp = os.path.join(out_dir, fname)
-        if os.path.isfile(fp) and os.path.getsize(fp) > 5000:
-            if fname.endswith(('.m4a', '.mp3', '.ogg', '.webm', '.mp4', '.opus')):
-                candidates.append((fp, os.path.getsize(fp)))
+        ydl_opts = _build_ydl_opts(out_dir, full_mode, [client_name])
+        title    = query
 
-    if not candidates:
-        return None
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+            if info:
+                entry = (info.get("entries") or [info])[0]
+                title = (entry or {}).get("title") or query
 
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return candidates[0][0], title
+            candidates = []
+            for fname in os.listdir(out_dir):
+                fp = os.path.join(out_dir, fname)
+                if os.path.isfile(fp) and os.path.getsize(fp) > 5000:
+                    if fname.endswith(('.m4a', '.mp3', '.ogg', '.webm',
+                                       '.mp4', '.opus', '.aac')):
+                        candidates.append((fp, os.path.getsize(fp)))
+
+            if candidates:
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                logging.info(f"[yt-search-dl] نجح بـ client={client_name}")
+                return candidates[0][0], title
+
+        except yt_dlp.utils.DownloadError as e:
+            err_str = str(e).lower()
+            last_err = str(e)
+            if "file is larger than max-filesize" in err_str:
+                too_large = True
+                break
+            if any(k in err_str for k in [
+                "sign in to confirm", "not a bot", "bot",
+                "please sign in", "po token", "po_token"
+            ]):
+                bot_detected = True
+            continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    if too_large:
+        return ("TOO_LARGE", query)
+    if bot_detected:
+        return ("BOT_DETECTED", query)
+
+    logging.error(f"[yt-search-dl] فشل جميع الـ clients. آخر خطأ: {last_err}")
+    return None
 
 
 @app.on_message(filters.all & filters.group & ~filters.bot, group=-1)
@@ -2482,16 +2558,39 @@ async def handle_youtube(client: Client, message: Message):
             )
 
         if not result:
-            await _safe_edit("❌ لم يتم العثور على الطلب، ابحث بصيغة أخرى")
+            await _safe_edit(
+                "❌ ما لگيت الأغنية، جرّب اسم ثاني أو كلمات أوضح 🎵"
+            )
             return
 
         if isinstance(result, tuple) and result[0] == "TOO_LARGE":
             title = result[1] if len(result) > 1 else "غير معروف"
             await _safe_edit(
-                f"⚠️ الأغنية كبيرة جداً (+25MB).\n"
-                f"🎵 <b>{title[:60]}</b>\n"
-                f"جرب البحث عن نسخة أقصر أو أقل جودة."
+                f"⚠️ الأغنية حجمها كبير، جرّب نسخة أقصر.\n"
+                f"🎵 <b>{title[:60]}</b>"
             )
+            return
+
+        if isinstance(result, tuple) and result[0] == "BOT_DETECTED":
+            # رسالة مفصّلة للمالك، ومختصرة لباقي الناس
+            if message.from_user.id == OWNER_ID:
+                await _safe_edit(
+                    "🤖 <b>يوتيوب طلب تحقّق Bot Detection</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "السبب: يوتيوب صار يحجب طلبات السيرفرات السحابية في 2026.\n\n"
+                    "✅ <b>الحل:</b> ضع ملف <code>cookies.txt</code> بجانب البوت.\n"
+                    "1️⃣ ادخل يوتيوب من المتصفح بحساب فرعي\n"
+                    "2️⃣ نزّل إضافة <i>Get cookies.txt LOCALLY</i>\n"
+                    "3️⃣ صدّر الكوكيز من <code>youtube.com</code>\n"
+                    "4️⃣ ارفع الملف للسيرفر بنفس مجلد <code>app.py</code>\n\n"
+                    "📚 شرح: github.com/yt-dlp/yt-dlp/wiki/FAQ#cookies"
+                )
+            else:
+                await _safe_edit(
+                    "🤖 يوتيوب يطلب تحقّق هسّه.\n"
+                    "⏳ خلّي ربع ساعة وجرّب مرة ثانية،\n"
+                    "أو أرسلها بصيغة ثانية (اسم الأغنية + الفنّان)."
+                )
             return
 
         audio_path, title = result
