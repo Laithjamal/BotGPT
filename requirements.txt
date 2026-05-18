@@ -1,0 +1,7 @@
+pyrofork
+tgcrypto
+pyaes
+pymediainfo
+pysocks
+httpx>=0.24.1
+yt-dlp
