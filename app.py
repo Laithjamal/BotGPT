@@ -2439,6 +2439,15 @@ async def handle_youtube(client: Client, message: Message):
     wait_msg = await message.reply_text("🔍 يبحث...")
     tmp_dir  = tempfile.mkdtemp()
 
+    # ── دالة مساعدة: تعديل آمن (يتجاهل MESSAGE_NOT_MODIFIED) ──
+    async def _safe_edit(text: str):
+        try:
+            await wait_msg.edit_text(text)
+        except Exception as _e:
+            # MESSAGE_NOT_MODIFIED أو أخطاء تعديل أخرى → نتجاهلها
+            if "MESSAGE_NOT_MODIFIED" not in str(_e):
+                logging.warning(f"[yt-edit] {_e}")
+
     try:
         loop = asyncio.get_event_loop()
 
@@ -2451,25 +2460,25 @@ async def handle_youtube(client: Client, message: Message):
         result = None
         if search_result:
             video_id, title = search_result
-            await wait_msg.edit_text("⏬ يحمّل...")
+            await _safe_edit("⏬ يحمّل...")
             result = await loop.run_in_executor(
                 None, _yt_download_by_id, video_id, title, tmp_dir, full_mode
             )
 
         # ── fallback: لو المسار السريع فشل، استخدم البحث+التحميل المدمج ──
         if not result:
-            await wait_msg.edit_text("⏬ يحمّل...")
+            await _safe_edit("⏬ يحاول مجدداً...")
             result = await loop.run_in_executor(
                 None, _yt_search_and_download, query, tmp_dir, full_mode
             )
 
         if not result:
-            await wait_msg.edit_text("❌ لم يتم العثور على الطلب، ابحث بصيغة أخرى")
+            await _safe_edit("❌ لم يتم العثور على الطلب، ابحث بصيغة أخرى")
             return
 
         if isinstance(result, tuple) and result[0] == "TOO_LARGE":
             title = result[1] if len(result) > 1 else "غير معروف"
-            await wait_msg.edit_text(
+            await _safe_edit(
                 f"⚠️ الأغنية كبيرة جداً (+25MB).\n"
                 f"🎵 <b>{title[:60]}</b>\n"
                 f"جرب البحث عن نسخة أقصر أو أقل جودة."
@@ -2481,13 +2490,13 @@ async def handle_youtube(client: Client, message: Message):
         # ── التحقق من الحجم النهائي ──
         file_size = os.path.getsize(audio_path)
         if file_size > 50 * 1024 * 1024:
-            await wait_msg.edit_text(
+            await _safe_edit(
                 f"⚠️ الأغنية كبيرة جداً ({file_size // 1024 // 1024}MB).\n"
                 f"🎵 <b>{title[:60]}</b>"
             )
             return
 
-        await wait_msg.edit_text("⬆️ يرسل...")
+        await _safe_edit("⬆️ يرسل...")
         sent = await message.reply_audio(
             audio      = audio_path,
             title      = title[:60],
@@ -2495,7 +2504,10 @@ async def handle_youtube(client: Client, message: Message):
             caption    = f"🎵 <b>{title[:60]}</b>",
             parse_mode = ParseMode.HTML,
         )
-        await wait_msg.delete()
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
 
         # ── احفظ في الكاش ──
         if sent and sent.audio:
@@ -2503,10 +2515,7 @@ async def handle_youtube(client: Client, message: Message):
 
     except Exception as e:
         logging.exception("youtube handler error")
-        try:
-            await wait_msg.edit_text(f"⚠️ صار خطأ: {str(e)[:150]}")
-        except Exception:
-            pass
+        await _safe_edit(f"⚠️ صار خطأ: {str(e)[:150]}")
     finally:
         _shutil.rmtree(tmp_dir, ignore_errors=True)
 
