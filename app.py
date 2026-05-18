@@ -2200,49 +2200,41 @@ def _get_cookies_path():
 
 def _build_fast_ydl_opts(out_dir: str, full_mode: bool):
     """
-    خيارات yt-dlp المُحسّنة للسرعة القصوى على fps.ms المجاني.
-    - format 140: m4a 128kbps مباشرة من YouTube (لا حاجة لـ FFmpeg)
-    - android_music client: غالباً أسرع من android العادي
-    - بدون postprocessors: نرسل m4a كما هو (تلغرام يقبله كصوت)
+    خيارات yt-dlp المُحسّنة للسرعة + التوافق مع YouTube الحديث (PO Token bypass).
+    - بدلاً من android_music الذي يحتاج PO Token على السيرفرات السحابية،
+      نستخدم mweb + tv_simply + android_vr — كلها لا تحتاج PO Token.
+    - format = bestaudio/best — مرن جداً، يقبل أي صيغة متوفرة.
+    - format_sort يفضّل m4a (سريع، بدون تحويل) ثم opus ثم mp3.
     """
     import yt_dlp
 
-    # ── سلسلة fallback مرنة لكل أنواع الصوت ──
-    # 140 (m4a 128k) → 251 (webm/opus 160k) → 250 (webm/opus 70k) →
-    # 249 (webm/opus 50k) → bestaudio (أي ملف صوت) → worst (آخر حل)
+    # نقبل أي صيغة صوت متوفرة (بدون قيود صارمة)
+    # YouTube قد يرجع m4a أو webm/opus أو mp4 — كلها مقبولة
+    format_spec = "bestaudio/best"
+
     if full_mode:
-        # نسخة كاملة: حتى 25 دقيقة، 45MB
-        format_spec  = (
-            "140/251/250/249/"
-            "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/"
-            "best[height<=480]"
-        )
-        max_duration = 1500
+        max_duration = 1500   # 25 دقيقة
         max_filesize = 45 * 1024 * 1024
     else:
-        # نسخة سريعة: حتى 10 دقائق، 18MB
-        format_spec  = (
-            "140/251/250/249/"
-            "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/"
-            "best[height<=360]"
-        )
-        max_duration = 600
+        max_duration = 600    # 10 دقائق
         max_filesize = 18 * 1024 * 1024
 
     opts = {
         "format":                     format_spec,
+        # نفضّل m4a ثم opus ثم mp3، ونفضّل أصغر ملف ضمن الجودة الجيدة
+        "format_sort":                ["acodec:m4a", "acodec:opus", "acodec:mp3", "abr~128"],
         "outtmpl":                    os.path.join(out_dir, "%(id)s.%(ext)s"),
         "noplaylist":                 True,
         "quiet":                      True,
         "no_warnings":                True,
         "noprogress":                 True,
-        "socket_timeout":             6,
-        "retries":                    2,
-        "extractor_retries":          2,
+        "socket_timeout":             8,
+        "retries":                    3,
+        "extractor_retries":          3,
         "fragment_retries":           3,
         "skip_unavailable_fragments": True,
         "concurrent_fragments":       5,
-        "http_chunk_size":            1024 * 1024,   # 1MB chunks
+        "http_chunk_size":            1024 * 1024,
         "max_filesize":               max_filesize,
         "geo_bypass":                 True,
         "nocheckcertificate":         True,
@@ -2251,15 +2243,21 @@ def _build_fast_ydl_opts(out_dir: str, full_mode: bool):
                                       ),
         "extractor_args": {
             "youtube": {
-                "player_client": ["android_music", "android"],
+                # ┌──── 🔑 المفتاح السحري لتجاوز قيود السيرفرات السحابية ────┐
+                # │ هذه العملاء لا يحتاجون PO Token (proof-of-origin):       │
+                # │  • mweb       = موبايل ويب (الأكثر استقراراً)            │
+                # │  • tv_simply  = تلفزيون مبسّط (يعطي صيغ صوت كاملة)      │
+                # │  • android_vr = نظارات VR (يتجاوز معظم القيود)            │
+                # │  • web        = ويب عادي (احتياط)                         │
+                # └─────────────────────────────────────────────────────────┘
+                "player_client": ["mweb", "tv_simply", "android_vr", "web"],
             }
         },
     }
     _cookies = _get_cookies_path()
     if _cookies:
         opts["cookiefile"] = _cookies
-    # ⚠️ متعمّداً: لا نضيف postprocessors (FFmpeg) → سرعة قصوى
-    # m4a يُرسَل كصوت طبيعي في تلغرام بدون أي تحويل
+    # m4a/webm كلاهما يُرسَل كصوت طبيعي في تلغرام بدون أي تحويل
     return opts
 
 
@@ -2280,13 +2278,13 @@ def _yt_search_id(query: str):
         "extract_flat":       True,
         "skip_download":      True,
         "noplaylist":         True,
-        "socket_timeout":     6,
-        "retries":            1,
-        "extractor_retries":  1,
+        "socket_timeout":     8,
+        "retries":            2,
+        "extractor_retries":  2,
         "geo_bypass":         True,
         "nocheckcertificate": True,
         "extractor_args": {
-            "youtube": {"player_client": ["android_music", "android"]}
+            "youtube": {"player_client": ["mweb", "tv_simply", "web"]}
         },
     }
     _cookies = _get_cookies_path()
